@@ -89,7 +89,7 @@ class TaskStateTrigger(BaseTrigger):
 
     async def run(self) -> typing.AsyncIterator[TriggerEvent]:
         """
-        Check periodically in the database to see if the dag exists and is in the running state.
+        Check periodically in the database to see if the dag run exists and is in the running state.
 
         If found, wait until the task specified will reach one of the expected states.
         If dag with specified name was not in the running state after _timeout_sec seconds
@@ -100,7 +100,7 @@ class TaskStateTrigger(BaseTrigger):
                 delta = utcnow() - self.trigger_start_time
                 if delta.total_seconds() < self._timeout_sec:
                     # mypy confuses typing here
-                    if await self.count_running_dags() == 0:  # type: ignore[call-arg]
+                    if await self.count_dag_runs() == 0:  # type: ignore[call-arg]
                         self.log.info("Waiting for DAG to start execution...")
                         await asyncio.sleep(self.poll_interval)
                 else:
@@ -117,18 +117,18 @@ class TaskStateTrigger(BaseTrigger):
 
     @sync_to_async
     @provide_session
-    def count_running_dags(self, session: Session):
-        """Count how many dag instances in running state in the database."""
-        dags = (
+    def count_dag_runs(self, session: Session) -> int | None:
+        """Count how many dag run instances exist in the database."""
+        count = (
             session.query(func.count("*"))
             .filter(
-                TaskInstance.dag_id == self.dag_id,
-                TaskInstance.execution_date.in_(self.execution_dates),
-                TaskInstance.state.in_(["running", "success"]),
+                DagRun.dag_id == self.dag_id,
+                DagRun.execution_date.in_(self.execution_dates),
+                DagRun.state.in_(["running", "success"]),
             )
             .scalar()
         )
-        return dags
+        return typing.cast(int, count)
 
     @sync_to_async
     @provide_session
@@ -187,14 +187,14 @@ class DagStateTrigger(BaseTrigger):
         """Check periodically if the dag run exists, and has hit one of the states yet, or not."""
         while True:
             # mypy confuses typing here
-            num_dags = await self.count_dags()  # type: ignore[call-arg]
+            num_dags = await self.count_dag_runs()  # type: ignore[call-arg]
             if num_dags == len(self.execution_dates):
                 yield TriggerEvent(self.serialize())
             await asyncio.sleep(self.poll_interval)
 
     @sync_to_async
     @provide_session
-    def count_dags(self, *, session: Session = NEW_SESSION) -> int | None:
+    def count_dag_runs(self, *, session: Session = NEW_SESSION) -> int | None:
         """Count how many dag runs in the database match our criteria."""
         count = (
             session.query(func.count("*"))  # .count() is inefficient
