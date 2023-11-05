@@ -20,7 +20,6 @@ from __future__ import annotations
 import enum
 import itertools
 import json
-import logging
 import math
 import time
 import warnings
@@ -37,7 +36,6 @@ from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream as kubernetes_stream
 from pendulum import DateTime
 from pendulum.parsing.exceptions import ParserError
-from tenacity import before_log
 from typing_extensions import Literal
 from urllib3.exceptions import HTTPError as BaseHTTPError
 
@@ -334,13 +332,16 @@ class PodManager(LoggingMixin):
         """Launch the pod asynchronously."""
         return self.run_pod_async(pod)
 
-    def await_pod_start(self, pod: V1Pod, startup_timeout: int = 120) -> None:
+    def await_pod_start(
+        self, pod: V1Pod, startup_timeout: int = 120, startup_check_interval: int = 1
+    ) -> None:
         """
         Wait for the pod to reach phase other than ``Pending``.
 
         :param pod:
         :param startup_timeout: Timeout (in seconds) for startup of the pod
             (if pod is pending for too long, fails task)
+        :param startup_check_interval: Interval (in seconds) between checks
         :return:
         """
         curr_time = time.time()
@@ -355,7 +356,7 @@ class PodManager(LoggingMixin):
                     "Check the pod events in kubernetes to determine why."
                 )
                 raise PodLaunchFailedException(msg)
-            time.sleep(1)
+            time.sleep(startup_check_interval)
 
     def follow_container_logs(self, pod: V1Pod, container_name: str) -> PodLoggingStatus:
         warnings.warn(
@@ -389,7 +390,6 @@ class PodManager(LoggingMixin):
             retry=tenacity.retry_if_exception_type(ApiException),
             stop=tenacity.stop_after_attempt(10),
             wait=tenacity.wait_fixed(1),
-            before=before_log(self.log, logging.INFO),
         )
         def consume_logs(
             *,
@@ -449,17 +449,10 @@ class PodManager(LoggingMixin):
                             self._progress_callback(line)
                     self.log.info("[%s] %s", container_name, message_to_log)
                     last_captured_timestamp = message_timestamp
-            except BaseHTTPError as e:
-                self.log.warning(
-                    "Reading of logs interrupted for container %r with error %r; will retry. "
-                    "Set log level to DEBUG for traceback.",
+            except BaseHTTPError:
+                self.log.exception(
+                    "Reading of logs interrupted for container %r; will retry.",
                     container_name,
-                    e,
-                )
-                self.log.debug(
-                    "Traceback for interrupted logs read for pod %r",
-                    pod.metadata.name,
-                    exc_info=True,
                 )
             return last_captured_timestamp or since_time, logs
 
@@ -719,7 +712,7 @@ class PodManager(LoggingMixin):
         ) as resp:
             result = self._exec_pod_command(
                 resp,
-                f"if [ -s {PodDefaults.XCOM_MOUNT_PATH}/return.json ]; then cat {PodDefaults.XCOM_MOUNT_PATH}/return.json; else echo __airflow_xcom_result_empty__; fi",  # noqa
+                f"if [ -s {PodDefaults.XCOM_MOUNT_PATH}/return.json ]; then cat {PodDefaults.XCOM_MOUNT_PATH}/return.json; else echo __airflow_xcom_result_empty__; fi",
             )
             if result and result.rstrip() != "__airflow_xcom_result_empty__":
                 # Note: result string is parsed to check if its valid json.
